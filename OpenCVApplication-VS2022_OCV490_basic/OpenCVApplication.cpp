@@ -13,6 +13,8 @@
 #include <chrono>
 #include <ctime>
 #include <thread>
+#include <cstdlib>
+
 
 wchar_t* projectPath;
 
@@ -829,16 +831,18 @@ void get_img_resized(const Mat& src, int c_min, int c_max, int r_min, int r_max)
 }
 
 typedef struct {
-	Mat resized;
+	std::vector<Mat> faces;
 	Mat all_face;
 }Mat_tuple;
 
-Mat_tuple draw_with_thiness(const Mat& color, const std::vector<component_info>& components, const char* fname) {
+Mat_tuple draw_with_thiness(const Mat& color, const std::vector<component_info>& components, const std::vector<std::string>& predictions) {
 	int height = color.rows;
 	int width = color.cols;
 	Mat resized;
 	Mat dst = color.clone();
+	std::vector<Mat> faces;
 
+	std::vector<component_info> valid_components;
 	for (auto c : components) {
 		if (c.area < 4500 || c.area > 200000)
 			continue;
@@ -850,35 +854,38 @@ Mat_tuple draw_with_thiness(const Mat& color, const std::vector<component_info>&
 
 		float wth = (float)box_w / (float)box_h;
 
-		if (wth < 0.6 || wth > 1.0)
+		if (wth < 0.4 || wth > 1.0)
 			continue;
 
-
+		valid_components.push_back(c);
 		//if (thiness < 0.1 || thiness > 0.80)
 		//	continue;
-		printf("Area: %d | Perimeter: %d | Thinness: %.3f | width to height %.3f \n", c.area, c.parameter, thiness, wth);
+		//printf("Area: %d | Perimeter: %d | Thinness: %.3f | width to height %.3f \n", c.area, c.parameter, thiness, wth);
+	}
+	std::sort(valid_components.begin(), valid_components.end(), [](const component_info& a, const component_info& b) {return a.c_min < b.c_min;});
+	
+	for (int i = 0; i < valid_components.size(); i++) {
+		component_info comp = valid_components[i];
+		int r_min = max(comp.r_min, 0);
+		int r_max = min(comp.r_max, color.rows - 1);
+		int c_min = max(comp.c_min, 0);
+		int c_max = min(comp.c_max, color.cols - 1);
+		rectangle(dst, Point(c_min, r_min), Point(c_max, r_max), Scalar(0, 255, 0), 2);
 
-
-		int r_min = max(c.r_min, 0);
-		int r_max = min(c.r_max, color.rows - 1);
-		int c_min = max(c.c_min, 0);
-		int c_max = min(c.c_max, color.cols - 1);
-
-		rectangle(dst,
-			Point(c_min, r_min),
-			Point(c_max, r_max),
-			Scalar(0, 255, 0), 2);
+		if (i < predictions.size()) {
+			putText(dst, predictions[i], Point(c_min, max(r_min - 10, 20)), FONT_HERSHEY_SIMPLEX, 0.8, Scalar(0, 0, 255), 2);
+		}
 		Mat write = Mat(r_max - r_min + 1, c_max - c_min + 1, CV_8UC3);
-		for (int i = r_min ; i <= r_max ; i++) {
-			for (int j = c_min ; j <= c_max ; j++) {
-				write.at<Vec3b>(i - r_min, j - c_min) = color.at<Vec3b>(i, j);
+		for (int r = r_min; r <= r_max; r++) {
+			for (int j = c_min; j <= c_max; j++) {
+				write.at<Vec3b>(r - r_min, j - c_min) = color.at<Vec3b>(r, j);
 			}
 		}
+		Mat resized;
 		resize(write, resized, Size(100, 100), 0, 0, INTER_AREA);
-		//imwrite("Razvan.png", resized);
-		//csv << get_filename(fname) << "," << c_min << "," << c_max << "," << r_min << "," << r_max << "\n";
+		faces.push_back(resized);
 	}
-	return Mat_tuple{ resized, dst };
+	return Mat_tuple{ faces, dst };
 }
 
 Mat dilatation(const Mat& src) {
@@ -968,15 +975,24 @@ Mat erosion(const Mat& src) {
 
 void get_photos_with_person(const Mat& src, const std::string name, int i) {
 	// src este t.resized
+	std::ofstream  fout;
+	fout.open("../TestPy/MyDataset/Faces/Dataset.csv", std::ios::out | std::ios::app);
 	std::string folder = "../TestPy/MyDataset/Faces/App_Faces/" + name;
-
 	std::filesystem::create_directories(folder);
 	std::string img_name = "../TestPy/MyDataset/Faces/App_Faces/" + name + "/" + name + "_" + std::to_string(i) + ".png";
+
+	std::string faces_dataset = "../TestPy/MyDataset/Faces/Faces/Faces/" + name + "_" + std::to_string(i) + ".png";
+	imwrite(faces_dataset, src);
+
+	std::string img_csv = name + "_" + std::to_string(i) + ".png";
 	imwrite(img_name, src);
+	fout << img_csv << ","
+		<< name << "\n";
+	fout.close();
 }
 
 
-void cam(const std::string& name) {
+void cam() {
 	//int Port = 0;
 	//telefon este 2
 	char fname[MAX_PATH];
@@ -984,17 +1000,35 @@ void cam(const std::string& name) {
 	VideoCapture cap(0);
 	cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
 	cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-
+	int yes;
+	std::string name;
+	std::cout << "Scan your face?\n";
+	std::cin >> yes;	
+	int my_count = 0;
+	if (yes > 0) {
+		std::cout << "Enter your name:";
+		std::string nume, prenume;
+		std::cin >> nume >> prenume;
+		name = nume + " " + prenume;
+		std::cout << "Number of photos you want to take:";
+		std::cin >> my_count;
+	}
+	int predict;
+	std::cout << "Predict your face?\n";
+	std::cin >> predict;
+	std::string predict_name = "";
+	int count = 0;
+	std::vector<std::string> predict_names;
 
 	if (!cap.isOpened()) {
 		std::cout << "Could not open the camera" << std::endl;
 		return;
 	}
-	int count = 0;
+
 	auto last_save = std::chrono::steady_clock::now();
+	auto last_predict = std::chrono::steady_clock::now();
 	while (cap.isOpened()) {
 		cap >> img;
-		//img = imread(fname);
 		Mat ycbcr = transfor_Ycbcr(img);
 		normalize_Y(ycbcr);
 		Mat hsv = transoform_HSV(img);
@@ -1003,26 +1037,48 @@ void cam(const std::string& name) {
 		Mat dil = dilatation(median);
 		Mat ero = erosion(dil);
 		int l = 0;
+		std::vector<component_info> cs = bfs(ero, l);//PANA AICI E PIPELINE
 
 
-		std::vector<component_info> cs = bfs(ero, l);
 		if (!img.empty()) {
-			Mat_tuple t = draw_with_thiness(img, cs,NULL);
 			auto now = std::chrono::steady_clock::now();
-			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_save).count();
-			if (count < 30 && !t.resized.empty() && elapsed >= 500) {
-				get_photos_with_person(t.resized, name, count);
-				count++;
-				last_save = now;
-				std::cout << "Salvat " << count << "/30" << std::endl;
+			Mat_tuple t = draw_with_thiness(img, cs, predict_names);
+
+			if (yes > 0) {
+				auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_save).count();
+				if (count < my_count && !t.faces.empty() && elapsed >= 500) {
+					get_photos_with_person(t.faces[0], name, count);
+					count++;
+					last_save = now;
+					std::cout << "Salvat " << count << "/" << my_count << std::endl;
+				}
+				if (count == my_count) {
+					system("python ../TestPy/Algs/train_model_svm.py");
+					yes = 0;
+				}
+			}
+
+			if (predict > 0) { 
+				auto elapsed_predict = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_save).count();
+				if (!t.faces.empty() && elapsed_predict >=5000) {
+					predict_names.clear();
+					for (int i = 0; i < t.faces.size(); i++) {
+						cv::imwrite("test_face.png", t.faces[i]);
+						system("python ../TestPy/Algs/recognise_face.py");
+						std::ifstream file("prediction.txt");
+						std::string single_name;
+						std::getline(file, single_name);
+						predict_names.push_back(single_name);
+						file.close();
+					}
+					last_predict = now;
+				}
 			}
 			imshow("t", t.all_face);
-			//imwrite("test.jpg",)
 			imshow("original camera", img);
 			imshow("ycbcr", ycbcr);
 			imshow("hsv", hsv);
 			imshow("binary", obj);
-			//imshow("dilatation", dil);
 			imshow("erosion", ero);
 		}
 		waitKey(1);
@@ -1062,10 +1118,7 @@ int main(int argc, char* argv[])
 {
 	cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_FATAL);
 	projectPath = _wgetcwd(0, 0);
-	std::string name;
-	std::cout << "Enter your name: ";
-	std::cin >> name;
-	cam(name);
+	cam();
 	//read_argv_img(argv[1]);
 	return 0;
 }
